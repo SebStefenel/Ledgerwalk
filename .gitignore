@@ -1,0 +1,17 @@
+# Bearer credentials — never commit
+.auth/
+traces/
+.env
+*.db
+statements/
+subscriptions.json
+
+# Node
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Playwright
+playwright-report/
+test-results/
