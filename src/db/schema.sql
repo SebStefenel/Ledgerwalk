@@ -29,3 +29,20 @@ CREATE TABLE IF NOT EXISTS charges (
 );
 
 CREATE INDEX IF NOT EXISTS idx_charges_subscription ON charges (subscription_id);
+
+-- Phase 2: one row per agent run over a service's billing page.
+CREATE TABLE IF NOT EXISTS audits (
+  id            INTEGER PRIMARY KEY,
+  service       TEXT    NOT NULL,
+  status        TEXT    NOT NULL,
+  fields_json   TEXT,                 -- extracted billing fields, JSON object
+  reason        TEXT    NOT NULL,
+  steps         INTEGER NOT NULL,
+  input_tokens  INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  trace_dir     TEXT    NOT NULL,
+  started_at    TEXT    NOT NULL,
+  finished_at   TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_audits_service ON audits (service, finished_at DESC);

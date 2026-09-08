@@ -11,13 +11,19 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "cli": "tsx src/cli.ts",
     "scan": "tsx src/cli.ts scan",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "login": "tsx src/cli.ts login",
+    "audit": "tsx src/cli.ts audit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
     "better-sqlite3": "^13.0.3",
     "commander": "^15.0.0",
     "csv-parse": "^7.0.2",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "otplib": "^13.5.0",
+    "playwright": "^1.63.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

@@ -1,0 +1,30 @@
+# One entry per service to audit.
+#
+#   name      shown in output; also the credential prefix (Notion -> NOTION_PASSWORD)
+#   url       where the run starts; the agent may not navigate off this origin
+#   goal      what to report, in plain language
+#   authFile  storageState saved by `npm run login -- --service <name>`
+#             (optional; defaults to .auth/<name>.json)
+#
+# Link these to real charges by setting "service" on a row in subscriptions.json.
+
+- name: Notion
+  url: https://www.notion.so/
+  goal: >
+    Find the workspace billing settings. Report the current plan name,
+    the amount billed, the billing cadence, and the next renewal date.
+  authFile: .auth/notion.json
+
+- name: Spotify
+  url: https://www.spotify.com/account/
+  goal: >
+    Open the subscription or plan page. Report the current plan name, the
+    recurring price, how often it is billed, and the next payment date.
+  authFile: .auth/spotify.json
+
+- name: GitHub
+  url: https://github.com/settings/billing
+  goal: >
+    Read the billing overview. Report the current plan name, the amount
+    billed, the billing cadence, and the next billing date.
+  authFile: .auth/github.json

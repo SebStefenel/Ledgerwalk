@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { DetectedSubscription } from '../stage1/parse-statements.js';
+import type { TaskResult } from '../trace/logger.js';
 
 export type Db = Database.Database;
 
@@ -83,4 +84,25 @@ export function saveSubscriptions(db: Db, subs: readonly DetectedSubscription[])
   });
 
   write(subs);
+}
+
+/** Record one agent run. Runs are append-only: the history is the audit trail. */
+export function saveAudit(db: Db, result: TaskResult, traceDir: string): void {
+  db.prepare(`
+    INSERT INTO audits
+      (service, status, fields_json, reason, steps, input_tokens, output_tokens,
+       trace_dir, started_at, finished_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    result.service,
+    result.status,
+    result.fields === null ? null : JSON.stringify(result.fields),
+    result.reason,
+    result.steps,
+    result.tokens.input,
+    result.tokens.output,
+    traceDir,
+    result.startedAt,
+    result.finishedAt,
+  );
 }
