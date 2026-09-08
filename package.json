@@ -1,10 +1,29 @@
 {
-  "name": "subscription-auditor",
+  "name": "ledgerwalk",
   "version": "0.1.0",
   "private": true,
+  "description": "Audits recurring subscriptions from bank statements and billing emails, reads each provider's billing page with a hand-written browser agent, and suggests open-source alternatives.",
+  "license": "MIT",
+  "author": "SebStefenel <stefenel.sebastian@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SebStefenel/Ledgerwalk.git"
+  },
+  "homepage": "https://github.com/SebStefenel/Ledgerwalk#readme",
+  "bugs": {
+    "url": "https://github.com/SebStefenel/Ledgerwalk/issues"
+  },
+  "keywords": [
+    "subscriptions",
+    "browser-agent",
+    "playwright",
+    "anthropic",
+    "claude",
+    "personal-finance"
+  ],
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && cp src/db/schema.sql dist/src/db/schema.sql",
