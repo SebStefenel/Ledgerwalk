@@ -1,0 +1,16 @@
+From: Netflix <info@mailer.netflix.com>
+To: me@example.com
+Subject: Your Netflix payment receipt
+Date: Thu, 12 Feb 2026 06:02:00 +0000
+Message-ID: <netflix-2026-02-12@mailer.netflix.com>
+Content-Type: text/plain; charset=utf-8
+
+Hi there,
+
+Thanks for being a member. Here is your receipt.
+
+Plan: Standard with ads
+Amount: GBP 4.99
+Billing period: monthly
+Next billing date: 12 March 2026
+

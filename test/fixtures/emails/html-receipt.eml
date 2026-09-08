@@ -1,0 +1,12 @@
+From: Spotify <no-reply@spotify.com>
+To: me@example.com
+Subject: Your Spotify Premium invoice
+Date: Wed, 4 Mar 2026 08:00:00 +0000
+Message-ID: <spotify-2026-03-04@spotify.com>
+Content-Type: text/html; charset=utf-8
+
+<html><head><style>.x{color:red}</style></head><body>
+<h1>Premium Duo</h1><p>Amount: &pound;16.99</p>
+<p>Billed monthly &amp; renews on 4 April 2026</p>
+<script>var a=1;</script>
+</body></html>

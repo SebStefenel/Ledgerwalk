@@ -13,6 +13,7 @@ independently of what the model asks for.
 | Phase | What it does | State |
 | ----- | ------------ | ----- |
 | 1 | Find recurring charges in CSV statement exports | **built** |
+| 1b | Find subscriptions in billing emails (alternative source) | **built** |
 | 2 | Browser agent reads each provider's billing page | **built** |
 | 3 | Suggest open-source alternatives, render the report | **built** |
 
@@ -56,6 +57,71 @@ Output goes to stdout, to SQLite, and to `subscriptions.json`.
 not really a subscription, and set `service` to the matching name in
 `tasks/services.yaml`. **Re-running `scan` preserves both fields** — it will not
 overwrite your edits, and re-scanning overlapping statements is idempotent.
+
+## Phase 1b — read billing emails
+
+An alternative to statements, and a better one for some subscriptions. Statements
+have three blind spots that no amount of parsing can fix:
+
+- **Bundled billers.** `APPLE.COM/BILL 19.97` is four subscriptions on one line.
+  A statement cannot tell you which. The receipt itemises every one.
+- **Trials.** A free trial that converts next month is invisible in a statement
+  until it takes your money. The email announcing it arrives weeks earlier.
+- **Plan tier and renewal date.** A bank line has neither.
+
+```bash
+npm run inbox                                   # IMAP, last 12 months
+npm run inbox -- --since 2026-01-01 --limit 400
+npm run inbox -- --dir ./exported-emails        # read .eml files, no credentials
+npm run inbox -- --dry-run                      # list candidates, call nothing
+```
+
+### Getting at the mail
+
+Either connect over IMAP — set `IMAP_HOST`, `IMAP_USER` and `IMAP_PASSWORD` in
+`.env` (for Gmail, an app password with 2-step verification on) — or skip
+credentials entirely and drag messages out of your mail client into a folder,
+then pass `--dir`.
+
+### How it filters
+
+Three stages, cheapest first, because reading a whole mailbox with a model would
+be absurdly expensive:
+
+1. **IMAP search** narrows to the date range server-side.
+2. **Envelopes only** are downloaded and matched against subject and sender
+   patterns. Bodies are fetched only for what survives — on a year of ordinary
+   mail that is a couple of hundred messages rather than all of them.
+3. **The model** reads those and decides what is actually a receipt.
+
+Stage 2 deliberately over-includes; a newsletter from `noreply@` gets through and
+is rejected at stage 3. Missing a real receipt would be the worse error.
+
+### What it extracts
+
+One model call per candidate email, four at a time, returning every recurring
+item in that email — with the plan tier, per-item price, cadence, renewal date
+and whether it is still a trial. One-off purchases sitting on the same receipt
+are excluded. Both behaviours are taught with worked examples rather than only
+described, the same way phase 3 teaches refusal.
+
+Twelve monthly receipts for one service collapse to a single row, keeping the
+newest — so a price rise shows the current price, not last January's.
+
+### Privacy
+
+Email bodies are sent to the model, so anything that looks like a card number is
+stripped before they leave the machine, and bodies are truncated to 4000
+characters. Everything else in a receipt does travel: read
+[mailbox.ts](src/stage1/mailbox.ts) before pointing this at a sensitive mailbox.
+
+### Both sources together
+
+`scan` and `inbox` write to the same `subscriptions.json` and **neither deletes
+the other's rows**. Where both find the same service, the statement keeps
+authority over the money — it is what actually left your account — and the
+receipt adds what a bank line cannot know: plan tier, currency, renewal date,
+trial status. Your `confirmed` and `service` edits survive both.
 
 ## Phase 2 — audit the billing pages
 
@@ -195,10 +261,11 @@ or just to get the capitalisation right — set `service` on the row in
 ## Tests
 
 ```bash
-npm test        # 50 tests: parsing heuristics, credential safety, guards,
+npm test        # 66 tests: parsing heuristics, credential safety, guards,
                 # observation against a live fixture site, full agent runs
                 # driven by a scripted model, alternative parsing and refusal,
-                # repo health, and report rendering
+                # repo health, report rendering, and email receipt reading
+                # against .eml fixtures including a bundled Apple receipt
 npm run typecheck
 ```
 

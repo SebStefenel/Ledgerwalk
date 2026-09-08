@@ -15,7 +15,8 @@
     "login": "tsx src/cli.ts login",
     "audit": "tsx src/cli.ts audit",
     "alternatives": "tsx src/cli.ts alternatives",
-    "report": "tsx src/cli.ts report"
+    "report": "tsx src/cli.ts report",
+    "inbox": "tsx src/cli.ts inbox"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
@@ -23,12 +24,15 @@
     "commander": "^15.0.0",
     "csv-parse": "^7.0.2",
     "dotenv": "^17.4.2",
+    "imapflow": "^2.0.0",
+    "mailparser": "^3.9.23",
     "otplib": "^13.5.0",
     "playwright": "^1.63.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^26.4.1",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"

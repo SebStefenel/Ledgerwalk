@@ -5,7 +5,10 @@ import { existsSync, globSync } from 'node:fs';
 
 import { latestAudit, openDb, saveAlternative, saveAudit, saveSubscriptions } from './db/index.js';
 import { detectRecurring, parseStatements } from './stage1/parse-statements.js';
-import { mergeWithExisting, writeReviewFile } from './stage1/review-file.js';
+import { mergeEmailFindings, mergeWithExisting, writeReviewFile } from './stage1/review-file.js';
+import { fetchFromImap, imapOptionsFromEnv, looksLikeReceipt, readFromDirectory } from './stage1/mailbox.js';
+import type { EmailMessage } from './stage1/mailbox.js';
+import { annualCostOf, dedupeSubscriptions, extractSubscriptions } from './stage1/receipts.js';
 import { DEFAULT_MAX_STEPS, loadServices, runTask } from './stage2/agent.js';
 import type { ServiceTask } from './stage2/agent.js';
 import { credentialRefs, hasAuthFile, interactiveLogin } from './stage2/auth.js';
@@ -130,9 +133,140 @@ program
     console.log(`Review ${options.out} and edit it before running phase 2.`);
   });
 
+const DEFAULT_TASKS = './tasks/services.yaml';
+const DEFAULT_SUBSCRIPTIONS = './subscriptions.json';
+
+/* ------------------------------------------------- phase 1b: email receipts */
+
+function monthsAgo(count: number): Date {
+  const date = new Date();
+  date.setMonth(date.getMonth() - count);
+  return date;
+}
+
+program
+  .command('inbox')
+  .description('Phase 1 (alternative) — find subscriptions from billing emails')
+  .option('--dir <path>', 'read exported .eml files from a folder instead of connecting to IMAP')
+  .option('--mailbox <name>', 'IMAP folder to search', 'INBOX')
+  .option('--since <date>', 'only look at mail on or after this date (yyyy-mm-dd)')
+  .option('--limit <n>', 'maximum bodies to download and read', '200')
+  .option('--out <path>', 'hand-editable review file', DEFAULT_SUBSCRIPTIONS)
+  .option('--headed', 'no-op here; accepted so every command takes the same flags', false)
+  .option('--dry-run', 'list the candidate emails without calling the model or writing anything', false)
+  .action(
+    async (options: {
+      dir?: string;
+      mailbox: string;
+      since?: string;
+      limit: string;
+      out: string;
+      dryRun: boolean;
+    }) => {
+      const limit = Number.parseInt(options.limit, 10);
+      if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit must be a positive integer');
+
+      const since = options.since === undefined ? monthsAgo(12) : new Date(`${options.since}T00:00:00Z`);
+      if (Number.isNaN(since.getTime())) throw new Error('--since must be a date like 2025-01-31');
+
+      let messages: readonly EmailMessage[];
+      if (options.dir !== undefined) {
+        const read = await readFromDirectory(options.dir);
+        for (const warning of read.warnings) console.warn(`! ${warning.source}: ${warning.message}`);
+        messages = read.messages;
+        console.log(`Read ${messages.length} message(s) from ${options.dir}.`);
+      } else {
+        console.log(`Connecting to IMAP, searching ${options.mailbox} since ${since.toISOString().slice(0, 10)}...`);
+        const fetched = await fetchFromImap(imapOptionsFromEnv({ mailbox: options.mailbox, since, limit }));
+        for (const warning of fetched.warnings) console.warn(`! ${warning.source}: ${warning.message}`);
+        messages = fetched.messages;
+        console.log(`Scanned ${fetched.scanned} message(s); downloaded ${messages.length} candidate(s).`);
+      }
+
+      // The .eml path has not been through the server-side date filter or the
+      // subject filter, so both are applied here; for IMAP this is a safety net.
+      // Newest first, so --limit keeps the most recent mail rather than whatever
+      // happened to sort first.
+      const sinceDay = since.toISOString().slice(0, 10);
+      const candidates = messages
+        .filter((message) => message.date >= sinceDay)
+        .filter((message) => looksLikeReceipt(message.subject, message.from))
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, limit);
+
+      if (candidates.length === 0) {
+        console.log('No candidate receipt emails found.');
+        return;
+      }
+
+      if (options.dryRun) {
+        console.log(`\n${candidates.length} candidate email(s); nothing sent to the model:\n`);
+        for (const message of candidates) {
+          console.log(`  ${message.date}  ${message.from.slice(0, 40).padEnd(40)}  ${message.subject}`);
+        }
+        console.log('\n--dry-run: nothing written.');
+        return;
+      }
+
+      const model = new ModelClient();
+      console.log(`Reading ${candidates.length} candidate email(s)...`);
+      const extracted = await extractSubscriptions({
+        messages: candidates,
+        model,
+        onProgress: (done, total, found) => {
+          process.stdout.write(`\r  ${done}/${total} read, ${found} subscription line(s) found`);
+        },
+      });
+      process.stdout.write('\n');
+      for (const warning of extracted.warnings) console.warn(`! ${warning.source}: ${warning.message}`);
+
+      const found = dedupeSubscriptions(extracted.subscriptions);
+      console.log(
+        `${extracted.receipts} of ${candidates.length} were real receipts; ` +
+          `${found.length} distinct subscription(s).\n`,
+      );
+
+      if (found.length === 0) {
+        console.log('Nothing to write.');
+        return;
+      }
+
+      const rows: string[][] = [
+        ['SERVICE', 'PLAN', 'AMOUNT', 'CADENCE', 'ANNUAL', 'NEXT RENEWAL', 'SEEN'],
+        ...found.map((item) => [
+          item.vendor,
+          item.planTier ?? '—',
+          `${item.currency ?? ''}${item.amount.toFixed(2)}`.trim(),
+          item.isTrial ? `${item.cadence} (trial)` : item.cadence,
+          annualCostOf(item.amount, item.cadence).toFixed(2),
+          item.nextRenewal ?? '—',
+          item.seenOn,
+        ]),
+      ];
+      console.log(renderTable(rows));
+
+      const trials = found.filter((item) => item.isTrial);
+      if (trials.length > 0) {
+        console.log(`\n${trials.length} trial(s) that will start charging:`);
+        for (const trial of trials) {
+          console.log(
+            `  ${trial.vendor} — ${trial.amount.toFixed(2)} ${trial.cadence} from ` +
+              `${trial.trialEndsOn ?? trial.nextRenewal ?? 'an unstated date'}`,
+          );
+        }
+      }
+
+      console.log(
+        `\nModel usage: ${model.tokens.input} in / ${model.tokens.output} out over ${model.calls} call(s).`,
+      );
+
+      writeReviewFile(options.out, mergeEmailFindings(found, options.out));
+      console.log(`Wrote ${options.out} (statement-detected rows and your edits are preserved).`);
+    },
+  );
+
 /* ------------------------------------------------------- phase 2 commands */
 
-const DEFAULT_TASKS = './tasks/services.yaml';
 
 function selectTasks(tasks: readonly ServiceTask[], service: string | undefined, all: boolean): ServiceTask[] {
   if (all) return [...tasks];
@@ -238,8 +372,6 @@ program
   );
 
 /* ------------------------------------------------------- phase 3 commands */
-
-const DEFAULT_SUBSCRIPTIONS = './subscriptions.json';
 
 program
   .command('alternatives')
