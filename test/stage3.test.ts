@@ -299,29 +299,50 @@ function stored(overrides: Partial<StoredAlternative> = {}): StoredAlternative {
   };
 }
 
+function row(overrides: Partial<ReportRow> = {}): ReportRow {
+  return {
+    service: 'Notion',
+    annualCost: 96,
+    amount: 8,
+    currency: null,
+    cadence: 'monthly',
+    planTier: null,
+    isTrial: false,
+    nextRenewal: null,
+    previousAmount: null,
+    priceChangedOn: null,
+    suggestion: null,
+    traceDir: null,
+    auditStatus: null,
+    ...overrides,
+  };
+}
+
+const NOW = new Date('2026-09-07T00:00:00Z');
+
 test('the report totals spend and savings, and counts only real alternatives', () => {
-  const rows: ReportRow[] = [
-    { service: 'Notion', annualCost: 96, suggestion: stored(), traceDir: null },
-    {
-      service: 'Amazon Prime',
-      annualCost: 139,
-      suggestion: stored({
+  const markdown = renderReport(
+    [
+      row({ service: 'Notion', annualCost: 96, suggestion: stored() }),
+      row({
         service: 'Amazon Prime',
         annualCost: 139,
-        alternative: null,
-        noAlternativeCategory: 'physical_logistics',
-        reason: 'Physical delivery cannot be self-hosted.',
-        annualSavings: null,
-        license: null,
-        repoUrl: null,
-        featuresLost: [],
+        suggestion: stored({
+          service: 'Amazon Prime',
+          annualCost: 139,
+          alternative: null,
+          noAlternativeCategory: 'physical_logistics',
+          reason: 'Physical delivery cannot be self-hosted.',
+          annualSavings: null,
+          license: null,
+          repoUrl: null,
+          featuresLost: [],
+        }),
       }),
-      traceDir: null,
-    },
-    { service: 'Spotify', annualCost: 120, suggestion: null, traceDir: null },
-  ];
-
-  const markdown = renderReport(rows, new Date('2026-09-07T00:00:00Z'));
+      row({ service: 'Spotify', annualCost: 120, suggestion: null }),
+    ],
+    NOW,
+  );
 
   assert.match(markdown, /\*\*Total annual spend:\*\* 355\.00/);
   assert.match(markdown, /\*\*Plausible annual savings:\*\* 96\.00/);
@@ -334,28 +355,113 @@ test('the report totals spend and savings, and counts only real alternatives', (
   assert.match(markdown, /_none_/, 'the refusal is shown as a row, not hidden');
   assert.match(markdown, /_not checked_/);
   assert.match(markdown, /physical logistics/);
-  assert.match(markdown, /never completes a cancellation/);
+  assert.match(markdown, /never completes a/);
+
+  assert.ok(!markdown.includes('## Needs attention'), 'no attention section when nothing needs it');
+  assert.ok(!markdown.includes('## Upcoming renewals'), 'no renewals section without renewal dates');
+});
+
+test('a trial about to start charging is the first thing in the report', () => {
+  const markdown = renderReport(
+    [
+      row({ service: 'Notion', annualCost: 96, suggestion: stored() }),
+      row({
+        service: 'Bear',
+        annualCost: 29.99,
+        amount: 29.99,
+        currency: 'GBP',
+        cadence: 'annual',
+        planTier: 'Pro Yearly',
+        isTrial: true,
+        nextRenewal: '2026-10-01',
+      }),
+    ],
+    NOW,
+  );
+
+  assert.match(markdown, /## Needs attention/);
+  const attention = markdown.slice(markdown.indexOf('## Needs attention'));
+  assert.match(attention, /\*\*Bear\*\* — free trial ends 2026-10-01, then GBP 29\.99 annual/);
+
+  // and it is visible in the table too, for anyone who only scans that
+  assert.match(markdown, /Bear.*— Pro Yearly \*\*\(trial\)\*\*/);
+  assert.ok(
+    markdown.indexOf('## Needs attention') < markdown.indexOf('## Subscriptions'),
+    'what needs acting on comes before the full list',
+  );
+});
+
+test('a price rise is called out with its size and date', () => {
+  const markdown = renderReport(
+    [
+      row({
+        service: 'Netflix',
+        annualCost: 119.88,
+        amount: 9.99,
+        previousAmount: 4.99,
+        priceChangedOn: '2026-01-07',
+      }),
+    ],
+    NOW,
+  );
+
+  assert.match(markdown, /\*\*Netflix\*\* — price rose from 4\.99 to 9\.99 \(\+100%\) on 2026-01-07/);
+  assert.match(markdown, /\| 119\.88 ↑ \|/, 'the table marks the row too');
+});
+
+test('a price cut is reported without being alarming', () => {
+  const markdown = renderReport(
+    [row({ service: 'Netflix', amount: 4.99, previousAmount: 9.99, priceChangedOn: '2026-01-07' })],
+    NOW,
+  );
+  assert.match(markdown, /price fell from 9\.99 to 4\.99 on 2026-01-07/);
+  assert.ok(!markdown.includes('↑'), 'a fall is not marked as a rise');
+});
+
+test('an audit that could not read the page is distinguished from one never run', () => {
+  const markdown = renderReport(
+    [
+      row({ service: 'Notion', auditStatus: 'auth_expired', traceDir: 'traces/notion-1' }),
+      row({ service: 'Spotify', auditStatus: 'extracted', traceDir: 'traces/spotify-1' }),
+      row({ service: 'GitHub', auditStatus: null }),
+    ],
+    NOW,
+  );
+
+  assert.match(markdown, /\*\*Notion\*\* — billing page not read: the saved session had expired/);
+  assert.ok(!markdown.includes('**Spotify** — billing page not read'), 'a successful audit is silent');
+  assert.ok(!markdown.includes('**GitHub** — billing page not read'), 'never-audited is not a failure');
+  assert.match(markdown, /\[GitHub\]|GitHub/);
+});
+
+test('known renewal dates become a forward calendar, past ones excluded', () => {
+  const markdown = renderReport(
+    [
+      row({ service: 'Netflix', amount: 9.99, currency: 'GBP', nextRenewal: '2026-10-12' }),
+      row({ service: 'Bear', amount: 29.99, currency: 'GBP', nextRenewal: '2026-09-20', isTrial: true }),
+      row({ service: 'Stale', amount: 5, nextRenewal: '2026-01-01' }),
+    ],
+    NOW,
+  );
+
+  const section = markdown.slice(markdown.indexOf('## Upcoming renewals'), markdown.indexOf('## Subscriptions'));
+  const dates = [...section.matchAll(/^\| (\d{4}-\d{2}-\d{2}) \|/gm)].map((match) => match[1]);
+  assert.deepEqual(dates, ['2026-09-20', '2026-10-12'], 'soonest first, past dates dropped');
+  assert.match(section, /Bear \(trial ends\)/);
 });
 
 test('an unmaintained project is flagged in the report', () => {
   const markdown = renderReport(
-    [
-      {
-        service: 'Notion',
-        annualCost: 96,
-        suggestion: stored({ repoStale: true, repoLastCommit: '2023-02-11' }),
-        traceDir: null,
-      },
-    ],
-    new Date('2026-09-07T00:00:00Z'),
+    [row({ suggestion: stored({ repoStale: true, repoLastCommit: '2023-02-11' }) })],
+    NOW,
   );
   assert.match(markdown, /\*\*unmaintained since 2023-02-11\*\*/);
 });
 
 test('each row links to its trace directory', () => {
   const markdown = renderReport(
-    [{ service: 'Notion', annualCost: 96, suggestion: stored(), traceDir: 'traces/notion-2026-09-07' }],
-    new Date('2026-09-07T00:00:00Z'),
+    [row({ suggestion: stored(), traceDir: 'traces/notion-2026-09-07' })],
+    NOW,
   );
   assert.match(markdown, /\[Notion\]\(traces\/notion-2026-09-07\)/);
 });
@@ -363,17 +469,18 @@ test('each row links to its trace directory', () => {
 test('pipes and newlines in model text cannot break the table', () => {
   const markdown = renderReport(
     [
-      {
+      row({
         service: 'Odd | Service',
         annualCost: 10,
+        planTier: 'Tier | One',
         suggestion: stored({ featuresLost: ['a | b', 'multi\nline note'] }),
-        traceDir: null,
-      },
+      }),
     ],
-    new Date('2026-09-07T00:00:00Z'),
+    NOW,
   );
 
-  const tableLines = markdown.split('\n').filter((line) => line.startsWith('| ') && !line.startsWith('| ---'));
+  const body = markdown.slice(markdown.indexOf('## Subscriptions'));
+  const tableLines = body.split('\n').filter((line) => line.startsWith('| ') && !line.startsWith('| ---'));
   for (const line of tableLines) {
     const cells = line.split(/(?<!\\)\|/).length - 2;
     assert.equal(cells, 8, `every row has 8 cells: ${line}`);

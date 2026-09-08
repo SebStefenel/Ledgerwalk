@@ -29,6 +29,10 @@ export interface SubscriptionRecord {
   readonly currency: string | null;
   readonly nextRenewal: string | null;
   readonly isTrial: boolean;
+  /** the last materially different price, when a statement shows one */
+  readonly previousAmount: number | null;
+  /** date of the first charge at the current price */
+  readonly priceChangedOn: string | null;
 }
 
 export interface SubscriptionFile {
@@ -85,6 +89,11 @@ function normalizeRecord(raw: unknown): SubscriptionRecord | null {
     currency: asString(record['currency']),
     nextRenewal: asString(record['nextRenewal']),
     isTrial: record['isTrial'] === true,
+    previousAmount:
+      typeof record['previousAmount'] === 'number' && Number.isFinite(record['previousAmount'])
+        ? record['previousAmount']
+        : null,
+    priceChangedOn: asString(record['priceChangedOn']),
   };
 }
 
@@ -152,6 +161,10 @@ export function mergeWithExisting(
       currency: prior?.currency ?? null,
       nextRenewal: prior?.nextRenewal ?? null,
       isTrial: prior?.isTrial ?? false,
+      // Price movement is re-derived from the charges every scan, so it is taken
+      // from the detection rather than from whatever the file said last time.
+      previousAmount: sub.previousAmount,
+      priceChangedOn: sub.priceChangedOn,
     };
   });
 
@@ -217,6 +230,8 @@ export function mergeEmailFindings(
       currency: receipt.currency,
       nextRenewal: receipt.nextRenewal,
       isTrial: receipt.isTrial,
+      previousAmount: null,
+      priceChangedOn: null,
     });
   }
 

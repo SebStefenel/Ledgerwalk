@@ -16,17 +16,34 @@ export interface Charge {
   readonly sourceFile: string;
 }
 
+/** A stretch of consecutive charges at one price. */
+export interface PricePoint {
+  readonly amount: number;
+  /** first charge date at this price */
+  readonly from: string;
+  /** last charge date at this price */
+  readonly to: string;
+  readonly count: number;
+}
+
 export interface DetectedSubscription {
   /** most representative raw description seen for this group */
   readonly merchant: string;
   readonly normalizedName: string;
   readonly cadence: Cadence;
-  /** median charge, in statement currency */
+  /** the CURRENT price: the median of the most recent price band */
   readonly amount: number;
   readonly chargeCount: number;
   readonly firstSeen: string;
   readonly lastSeen: string;
+  /** derived from the current price, so a price rise is reflected immediately */
   readonly annualCost: number;
+  /** every price this subscription has been charged at, oldest first */
+  readonly priceHistory: readonly PricePoint[];
+  /** the last materially different price, when there was one */
+  readonly previousAmount: number | null;
+  /** date of the first charge at the current price */
+  readonly priceChangedOn: string | null;
   readonly charges: readonly Charge[];
 }
 
@@ -443,10 +460,19 @@ export function parseStatements(paths: readonly string[]): ParseResult {
 
 /* ------------------------------------------------------ recurrence  detection */
 
-/** Charges must sit within this fraction of the group median to count as "the
- *  same price". Price rises mid-history therefore split into their own group,
- *  which is the honest answer — the newer one wins on last-seen date. */
+/** Two charges count as "the same price" when they are within this of each other. */
 const AMOUNT_TOLERANCE = 0.1;
+
+/**
+ * Average charges per price band required to believe a group is a subscription.
+ *
+ * This is what separates a subscription from a shop. A subscription holds one
+ * price for several billing cycles and then steps to a new one, so a long
+ * history collapses into a handful of bands. A supermarket charges a different
+ * amount nearly every time, so its bands are almost all single charges and the
+ * group is rejected.
+ */
+const MIN_CHARGES_PER_BAND = 3;
 
 /** Strict windows from the spec, matched against the *median* gap. */
 const CADENCE_WINDOWS: Readonly<Record<Cadence, readonly [number, number]>> = {
@@ -518,9 +544,69 @@ function representativeName(charges: readonly Charge[]): string {
 }
 
 /**
+ * Walk the charges in date order and cut a new band whenever the amount stops
+ * matching the band it is in. Returns bands oldest first, so the last one is
+ * what the subscription costs today.
+ */
+export function segmentPriceBands(sortedByDate: readonly Charge[]): PricePoint[] {
+  interface Band {
+    amounts: number[];
+    from: string;
+    to: string;
+  }
+  const bands: Band[] = [];
+
+  for (const charge of sortedByDate) {
+    const current = bands[bands.length - 1];
+    if (current !== undefined) {
+      const representative = median(current.amounts);
+      if (
+        representative > 0 &&
+        Math.abs(charge.amount - representative) <= AMOUNT_TOLERANCE * representative
+      ) {
+        current.amounts.push(charge.amount);
+        current.to = charge.date;
+        continue;
+      }
+    }
+    bands.push({ amounts: [charge.amount], from: charge.date, to: charge.date });
+  }
+
+  return bands.map((band) => ({
+    amount: Math.round(median(band.amounts) * 100) / 100,
+    from: band.from,
+    to: band.to,
+    count: band.amounts.length,
+  }));
+}
+
+/**
+ * The last price that genuinely differs from today's.
+ *
+ * Single-charge bands part-way through a history are skipped: a one-off purchase
+ * from the same merchant is not a price change, and reporting it as one would be
+ * worse than saying nothing.
+ */
+export function priceChange(
+  bands: readonly PricePoint[],
+): { readonly previousAmount: number; readonly changedOn: string } | null {
+  const current = bands[bands.length - 1];
+  if (current === undefined) return null;
+
+  for (let index = bands.length - 2; index >= 0; index -= 1) {
+    const band = bands[index];
+    if (band === undefined || band.count < 2) continue;
+    if (Math.abs(band.amount - current.amount) <= AMOUNT_TOLERANCE * current.amount) return null;
+    return { previousAmount: band.amount, changedOn: current.from };
+  }
+  return null;
+}
+
+/**
  * Group charges by fuzzy merchant name and keep the groups that look like a
- * subscription: at least three same-priced charges at a monthly or annual
- * rhythm. Result is sorted by inferred annual cost, largest first.
+ * subscription: at least three charges at a monthly or annual rhythm, holding a
+ * steady price between occasional changes. Result is sorted by inferred annual
+ * cost (at today's price), largest first.
  */
 export function detectRecurring(charges: readonly Charge[]): DetectedSubscription[] {
   const groups = new Map<string, Charge[]>();
@@ -536,15 +622,19 @@ export function detectRecurring(charges: readonly Charge[]): DetectedSubscriptio
   for (const [normalizedName, bucket] of groups) {
     if (bucket.length < 3) continue;
 
-    // Keep only charges clustered around the group's typical price.
-    const typicalAmount = median(bucket.map((charge) => charge.amount));
-    if (typicalAmount <= 0) continue;
-    const priced = bucket.filter(
-      (charge) => Math.abs(charge.amount - typicalAmount) <= AMOUNT_TOLERANCE * typicalAmount,
-    );
-    if (priced.length < 3) continue;
+    const sorted = [...bucket].sort((a, b) => a.date.localeCompare(b.date));
 
-    const sorted = [...priced].sort((a, b) => a.date.localeCompare(b.date));
+    // Split the history into consecutive price bands rather than discarding
+    // everything outside one band. A subscription whose price rose is still one
+    // subscription — dropping the newer, dearer charges would report a price you
+    // no longer pay and a last-seen date months in the past.
+    const priceHistory = segmentPriceBands(sorted);
+    if (priceHistory.length === 0) continue;
+    if (priceHistory.length * MIN_CHARGES_PER_BAND > sorted.length) continue;
+
+    const currentPrice = priceHistory[priceHistory.length - 1];
+    if (currentPrice === undefined || currentPrice.amount <= 0) continue;
+
     const gaps: number[] = [];
     for (let index = 1; index < sorted.length; index += 1) {
       const previous = sorted[index - 1];
@@ -556,20 +646,25 @@ export function detectRecurring(charges: readonly Charge[]): DetectedSubscriptio
     const cadence = classify(gaps);
     if (cadence === null) continue;
 
-    const amount = median(sorted.map((charge) => charge.amount));
+    const amount = currentPrice.amount;
     const first = sorted[0];
     const last = sorted[sorted.length - 1];
     if (first === undefined || last === undefined) continue;
+
+    const change = priceChange(priceHistory);
 
     found.push({
       merchant: representativeName(sorted),
       normalizedName,
       cadence,
-      amount: Math.round(amount * 100) / 100,
+      amount,
       chargeCount: sorted.length,
       firstSeen: first.date,
       lastSeen: last.date,
       annualCost: Math.round((cadence === 'monthly' ? amount * 12 : amount) * 100) / 100,
+      priceHistory,
+      previousAmount: change?.previousAmount ?? null,
+      priceChangedOn: change?.changedOn ?? null,
       charges: sorted,
     });
   }

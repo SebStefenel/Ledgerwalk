@@ -13,8 +13,11 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   charge_count    INTEGER NOT NULL,
   first_seen      TEXT    NOT NULL,           -- ISO yyyy-mm-dd
   last_seen       TEXT    NOT NULL,           -- ISO yyyy-mm-dd
-  annual_cost     REAL    NOT NULL,           -- inferred from cadence
+  annual_cost     REAL    NOT NULL,           -- inferred from the CURRENT price
   confirmed       INTEGER NOT NULL DEFAULT 0, -- set from the hand-edited JSON
+  previous_amount REAL,                       -- last materially different price
+  price_changed_on TEXT,                      -- first charge date at the current price
+  price_history   TEXT,                       -- JSON array of {amount, from, to, count}
   updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 

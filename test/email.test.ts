@@ -298,6 +298,8 @@ test('email findings become new rows and enrich statement rows', () => {
         currency: null,
         nextRenewal: null,
         isTrial: false,
+        previousAmount: null,
+        priceChangedOn: null,
       },
     ],
   });
@@ -354,6 +356,9 @@ test('a statement scan never deletes rows that only email could find', () => {
         firstSeen: '2025-01-14',
         lastSeen: '2025-12-11',
         annualCost: 131.88,
+        priceHistory: [{ amount: 10.99, from: '2025-01-14', to: '2025-12-11', count: 12 }],
+        previousAmount: null,
+        priceChangedOn: null,
         charges: [],
       },
     ],

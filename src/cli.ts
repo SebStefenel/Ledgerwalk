@@ -113,7 +113,22 @@ program
     console.log(`\n${renderTable(table)}`);
 
     const total = detected.reduce((sum, sub) => sum + sub.annualCost, 0);
-    console.log(`\n${detected.length} recurring charge(s); inferred annual spend ${money(total)}\n`);
+    console.log(`\n${detected.length} recurring charge(s); inferred annual spend ${money(total)}`);
+
+    // AMOUNT above is the current price. Say so when it has not always been.
+    const changed = detected.filter((sub) => sub.previousAmount !== null);
+    if (changed.length > 0) {
+      console.log('\nPrice changes:');
+      for (const sub of changed) {
+        const previous = sub.previousAmount ?? 0;
+        const direction = previous < sub.amount ? 'rose' : 'fell';
+        console.log(
+          `  ${sub.normalizedName}: ${direction} from ${money(previous)} to ${money(sub.amount)} ` +
+            `on ${sub.priceChangedOn ?? 'an unknown date'}`,
+        );
+      }
+    }
+    console.log('');
 
     if (options.dryRun) {
       console.log('--dry-run: nothing written.');

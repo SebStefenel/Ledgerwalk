@@ -21,11 +21,35 @@ function schemaPath(): string {
   throw new Error(`Cannot locate schema.sql (looked in ${beside} and ${fromSource})`);
 }
 
+/**
+ * Columns added after the first release. `CREATE TABLE IF NOT EXISTS` leaves an
+ * existing table alone, so new columns have to be added explicitly or an older
+ * database would break on the next write.
+ */
+const ADDED_COLUMNS: readonly { readonly table: string; readonly column: string; readonly type: string }[] = [
+  { table: 'subscriptions', column: 'previous_amount', type: 'REAL' },
+  { table: 'subscriptions', column: 'price_changed_on', type: 'TEXT' },
+  { table: 'subscriptions', column: 'price_history', type: 'TEXT' },
+];
+
+function migrate(db: Db): void {
+  for (const { table, column, type } of ADDED_COLUMNS) {
+    const existing = db
+      .prepare<[], { name: string }>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((row) => row.name);
+    if (existing.length === 0) continue; // table not created yet; schema.sql handles it
+    if (existing.includes(column)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+}
+
 export function openDb(path: string): Db {
   mkdirSync(dirname(resolve(path)), { recursive: true });
   const db = new Database(path);
   db.pragma('journal_mode = WAL');
   db.exec(readFileSync(schemaPath(), 'utf8'));
+  migrate(db);
   return db;
 }
 
@@ -38,19 +62,25 @@ export function openDb(path: string): Db {
  * hand-edited subscriptions.json, and a re-scan must not silently clear it.
  */
 export function saveSubscriptions(db: Db, subs: readonly DetectedSubscription[]): void {
-  const upsertSub = db.prepare<[string, string, string, number, number, string, string, number]>(`
+  const upsertSub = db.prepare<
+    [string, string, string, number, number, string, string, number, number | null, string | null, string]
+  >(`
     INSERT INTO subscriptions
-      (merchant, normalized_name, cadence, amount, charge_count, first_seen, last_seen, annual_cost)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (merchant, normalized_name, cadence, amount, charge_count, first_seen, last_seen,
+       annual_cost, previous_amount, price_changed_on, price_history)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (normalized_name) DO UPDATE SET
-      merchant     = excluded.merchant,
-      cadence      = excluded.cadence,
-      amount       = excluded.amount,
-      charge_count = excluded.charge_count,
-      first_seen   = excluded.first_seen,
-      last_seen    = excluded.last_seen,
-      annual_cost  = excluded.annual_cost,
-      updated_at   = datetime('now')
+      merchant         = excluded.merchant,
+      cadence          = excluded.cadence,
+      amount           = excluded.amount,
+      charge_count     = excluded.charge_count,
+      first_seen       = excluded.first_seen,
+      last_seen        = excluded.last_seen,
+      annual_cost      = excluded.annual_cost,
+      previous_amount  = excluded.previous_amount,
+      price_changed_on = excluded.price_changed_on,
+      price_history    = excluded.price_history,
+      updated_at       = datetime('now')
   `);
 
   const findSubId = db.prepare<[string], { id: number }>(
@@ -74,6 +104,9 @@ export function saveSubscriptions(db: Db, subs: readonly DetectedSubscription[])
         sub.firstSeen,
         sub.lastSeen,
         sub.annualCost,
+        sub.previousAmount,
+        sub.priceChangedOn,
+        JSON.stringify(sub.priceHistory),
       );
       const row = findSubId.get(sub.normalizedName);
       if (row === undefined) throw new Error(`upsert failed for ${sub.normalizedName}`);

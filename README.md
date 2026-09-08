@@ -46,8 +46,23 @@ above the real header row. Merchant strings are fuzzed onto one grouping key, so
 `SPOTIFY*P1A2B3`, `NETFLIX.COM 8667797` and `Notion Labs Inc SAN FRANCISCO CA`
 collapse to `SPOTIFY`, `NETFLIX`, `NOTION LABS`.
 
-A charge group is called recurring when it has 3+ charges, priced within 10% of
-each other, spaced roughly monthly (28–31d) or annually (360–370d).
+A charge group is called recurring when it has 3+ charges spaced roughly monthly
+(28–31d) or annually (360–370d), holding a steady price between occasional
+changes.
+
+### Price changes
+
+A subscription whose price rises is still one subscription. The history is split
+into consecutive price bands, and the **most recent band is the price reported**
+— so annual cost, last-seen date and charge count all reflect what you pay now,
+not what you used to pay. `scan` prints any change it finds, and the report
+calls it out with the size and date.
+
+That banding is also what separates a subscription from a shop: a subscription
+holds one price for several cycles, so a long history collapses into a handful of
+bands, while a supermarket charges a different amount nearly every time and is
+rejected. A single odd charge from a subscription merchant — a one-off purchase —
+forms its own band and is deliberately not reported as a price change.
 
 Output goes to stdout, to SQLite, and to `subscriptions.json`.
 
@@ -243,11 +258,25 @@ is allowed to be imperfect: rate limits and errors are skipped silently. Set
 
 ### The report
 
-`npm run report` renders total annual spend and total plausible savings, then a
-row per subscription: service, annual cost, alternative, license, self-host,
-migration effort, savings, features lost. Each service links to the trace
-directory for its audit run, and the reasoning behind every suggestion —
-including every refusal — is listed underneath.
+`npm run report` opens with total annual spend and total plausible savings, then:
+
+**Needs attention** — only the things worth acting on, soonest first:
+
+- a free trial about to start charging, with the date and the price it becomes
+- a price that has gone up, with the size of the rise and when it happened
+- a service whose billing page the agent could not read, so you know which
+  figures came from statements alone
+
+**Upcoming renewals** — a forward calendar built from the renewal dates receipts
+and billing pages supplied, soonest first.
+
+**Subscriptions** — a row each: service, annual cost, alternative, license,
+self-host, migration effort, savings, features lost. Plan tier sits next to the
+service name, trials are marked, and a risen price carries a ↑. A linked service
+name means its billing page was actually read; the link goes to that run's trace
+directory.
+
+**Notes** — the reasoning behind every suggestion, including every refusal.
 
 `report` only reads the database, so it costs nothing to re-render.
 
@@ -261,7 +290,8 @@ or just to get the capitalisation right — set `service` on the row in
 ## Tests
 
 ```bash
-npm test        # 66 tests: parsing heuristics, credential safety, guards,
+npm test        # 78 tests: parsing heuristics, price-change tracking,
+                # credential safety, guards,
                 # observation against a live fixture site, full agent runs
                 # driven by a scripted model, alternative parsing and refusal,
                 # repo health, report rendering, and email receipt reading
