@@ -13,7 +13,9 @@
     "scan": "tsx src/cli.ts scan",
     "test": "tsx --test test/*.test.ts",
     "login": "tsx src/cli.ts login",
-    "audit": "tsx src/cli.ts audit"
+    "audit": "tsx src/cli.ts audit",
+    "alternatives": "tsx src/cli.ts alternatives",
+    "report": "tsx src/cli.ts report"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",

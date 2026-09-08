@@ -3,12 +3,9 @@ import { after, before, test } from 'node:test';
 import { mkdtempSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Message } from '@anthropic-ai/sdk/resources/messages';
-
 import { runTask } from '../src/stage2/agent.js';
 import type { ServiceTask } from '../src/stage2/agent.js';
-import type { ModelCallOptions, ModelSender } from '../src/model/client.js';
-import type { TokenUsage } from '../src/trace/logger.js';
+import { ScriptedModel } from './fixtures/scripted-model.js';
 import { startFixtureSite } from './fixtures/site.js';
 import type { Fixture } from './fixtures/site.js';
 
@@ -21,56 +18,6 @@ before(async () => {
 after(async () => {
   await site.close();
 });
-
-interface ScriptedCall {
-  readonly tool: string;
-  readonly input: Readonly<Record<string, unknown>>;
-}
-
-/** A stand-in for the model that plays a fixed sequence of tool calls. */
-class ScriptedModel implements ModelSender {
-  readonly prompts: string[] = [];
-  #index = 0;
-  #input = 0;
-  #output = 0;
-
-  constructor(private readonly script: readonly ScriptedCall[]) {}
-
-  get tokens(): TokenUsage {
-    return { input: this.#input, output: this.#output };
-  }
-
-  send(options: ModelCallOptions): Promise<Message> {
-    const first = options.messages[0];
-    const content = first === undefined ? '' : first.content;
-    this.prompts.push(typeof content === 'string' ? content : JSON.stringify(content));
-
-    const call = this.script[Math.min(this.#index, this.script.length - 1)];
-    this.#index += 1;
-    if (call === undefined) throw new Error('empty script');
-
-    this.#input += 100;
-    this.#output += 10;
-
-    return Promise.resolve({
-      id: `msg_${this.#index}`,
-      type: 'message',
-      role: 'assistant',
-      model: 'scripted',
-      content: [{ type: 'tool_use', id: `tu_${this.#index}`, name: call.tool, input: call.input }],
-      stop_reason: 'tool_use',
-      stop_sequence: null,
-      usage: {
-        input_tokens: 100,
-        output_tokens: 10,
-        cache_creation_input_tokens: null,
-        cache_read_input_tokens: null,
-        server_tool_use: null,
-        service_tier: null,
-      },
-    } as Message);
-  }
-}
 
 function task(origin: string): ServiceTask {
   return {

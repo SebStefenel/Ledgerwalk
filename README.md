@@ -14,7 +14,7 @@ independently of what the model asks for.
 | ----- | ------------ | ----- |
 | 1 | Find recurring charges in CSV statement exports | **built** |
 | 2 | Browser agent reads each provider's billing page | **built** |
-| 3 | Suggest open-source alternatives | not built yet |
+| 3 | Suggest open-source alternatives, render the report | **built** |
 
 ## Setup
 
@@ -146,12 +146,59 @@ playwright-trace.zip   npx playwright show-trace <path>
 `meta.json` documents the step schema inline, so the eval harness can read a
 trace directory without importing any of this code.
 
+## Phase 3 — alternatives and the report
+
+```bash
+npm run alternatives                      # one Claude call per subscription
+npm run alternatives -- --service Notion  # just one
+npm run alternatives -- --dry-run         # print the prompts, call nothing
+npm run report                            # markdown to stdout
+npm run report -- --out report.md         # and to a file
+```
+
+One call per confirmed subscription, given its name, the plan tier phase 2 read
+from the billing page, and the annual cost from phase 1.
+
+**Refusal is the point.** Some categories have no open-source substitute — a
+licensed streaming catalogue, physical delivery, a regulated service, anything
+whose value is that other people are already on it. The model returns `null` with
+a category and a reason for those. That behaviour is taught with two worked
+examples sent as real tool calls, one substitutable (Notion) and one not (Amazon
+Prime), rather than only described in the instructions — an instruction alone is
+easier to drift away from than a demonstrated pattern.
+
+Suggested savings are clamped to what you actually pay, so the total at the top
+of the report cannot be inflated by an over-enthusiastic estimate.
+
+When a suggestion has a GitHub repo, its stars and last commit date are looked
+up and anything untouched for 18+ months is flagged as unmaintained. This column
+is allowed to be imperfect: rate limits and errors are skipped silently. Set
+`GITHUB_TOKEN` for a higher rate limit, or pass `--no-github` to skip it.
+
+### The report
+
+`npm run report` renders total annual spend and total plausible savings, then a
+row per subscription: service, annual cost, alternative, license, self-host,
+migration effort, savings, features lost. Each service links to the trace
+directory for its audit run, and the reasoning behind every suggestion —
+including every refusal — is listed underneath.
+
+`report` only reads the database, so it costs nothing to re-render.
+
+## Which name a service goes by
+
+Phase 1 normalises `NETFLIX.COM 8667797` to `NETFLIX`, and that cleaned name is
+what phases 2 and 3 use. To override it — to match a `tasks/services.yaml` entry,
+or just to get the capitalisation right — set `service` on the row in
+`subscriptions.json`. That value wins over everything else.
+
 ## Tests
 
 ```bash
-npm test        # 35 tests: parsing heuristics, credential safety, guards,
-                # observation against a live fixture site, and full agent runs
-                # driven by a scripted model
+npm test        # 50 tests: parsing heuristics, credential safety, guards,
+                # observation against a live fixture site, full agent runs
+                # driven by a scripted model, alternative parsing and refusal,
+                # repo health, and report rendering
 npm run typecheck
 ```
 

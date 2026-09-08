@@ -1,43 +1,19 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { Command } from 'commander';
-import { existsSync, globSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, globSync } from 'node:fs';
 
-import { openDb, saveAudit, saveSubscriptions } from './db/index.js';
+import { latestAudit, openDb, saveAlternative, saveAudit, saveSubscriptions } from './db/index.js';
 import { detectRecurring, parseStatements } from './stage1/parse-statements.js';
-import type { DetectedSubscription } from './stage1/parse-statements.js';
+import { mergeWithExisting, writeReviewFile } from './stage1/review-file.js';
 import { DEFAULT_MAX_STEPS, loadServices, runTask } from './stage2/agent.js';
 import type { ServiceTask } from './stage2/agent.js';
 import { credentialRefs, hasAuthFile, interactiveLogin } from './stage2/auth.js';
 import { ModelClient } from './model/client.js';
-
-/* ------------------------------------------------------------- json  shape */
-
-/** One row of the hand-editable review file. */
-interface SubscriptionRecord {
-  merchant: string;
-  normalizedName: string;
-  cadence: 'monthly' | 'annual';
-  amount: number;
-  chargeCount: number;
-  firstSeen: string;
-  lastSeen: string;
-  annualCost: number;
-  /** set false to exclude a row from later phases */
-  confirmed: boolean;
-  /** optional link to a tasks/services.yaml entry, filled in by hand */
-  service: string | null;
-}
-
-interface SubscriptionFile {
-  generatedAt: string;
-  note: string;
-  subscriptions: SubscriptionRecord[];
-}
-
-const REVIEW_NOTE =
-  'Edit freely. Set confirmed:false to drop a row from later phases; set "service" ' +
-  'to the matching name in tasks/services.yaml. Re-running scan preserves both fields.';
+import { renderRequest, suggestAlternative } from './stage3/alternatives.js';
+import { loadConfirmed, serviceNameFor } from './stage1/review-file.js';
+import { buildRows, renderReport } from './report.js';
+import { writeFileSync } from 'node:fs';
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -74,41 +50,6 @@ function renderTable(rows: readonly (readonly string[])[]): string {
   if (header === undefined) return '';
   const divider = width.map((w) => '-'.repeat(w)).join('  ');
   return [line(header), divider, ...rows.slice(1).map(line)].join('\n');
-}
-
-/** Carry the user's hand edits across a re-scan. */
-function mergeWithExisting(detected: readonly DetectedSubscription[], path: string): SubscriptionFile {
-  const previous = new Map<string, SubscriptionRecord>();
-  if (existsSync(path)) {
-    try {
-      const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<SubscriptionFile>;
-      for (const record of parsed.subscriptions ?? []) {
-        if (typeof record.normalizedName === 'string') previous.set(record.normalizedName, record);
-      }
-    } catch {
-      console.warn(`! ${path} is not valid JSON — writing a fresh file`);
-    }
-  }
-
-  return {
-    generatedAt: new Date().toISOString(),
-    note: REVIEW_NOTE,
-    subscriptions: detected.map((sub) => {
-      const prior = previous.get(sub.normalizedName);
-      return {
-        merchant: sub.merchant,
-        normalizedName: sub.normalizedName,
-        cadence: sub.cadence,
-        amount: sub.amount,
-        chargeCount: sub.chargeCount,
-        firstSeen: sub.firstSeen,
-        lastSeen: sub.lastSeen,
-        annualCost: sub.annualCost,
-        confirmed: prior?.confirmed ?? true,
-        service: prior?.service ?? null,
-      };
-    }),
-  };
 }
 
 /* -------------------------------------------------------------------- cli */
@@ -183,8 +124,7 @@ program
       db.close();
     }
 
-    const file = mergeWithExisting(detected, options.out);
-    writeFileSync(options.out, `${JSON.stringify(file, null, 2)}\n`, 'utf8');
+    writeReviewFile(options.out, mergeWithExisting(detected, options.out));
 
     console.log(`Wrote ${options.db} and ${options.out}`);
     console.log(`Review ${options.out} and edit it before running phase 2.`);
@@ -296,6 +236,152 @@ program
       );
     },
   );
+
+/* ------------------------------------------------------- phase 3 commands */
+
+const DEFAULT_SUBSCRIPTIONS = './subscriptions.json';
+
+program
+  .command('alternatives')
+  .description('Phase 3 — ask Claude for an open-source alternative to each subscription')
+  .option('--subscriptions <path>', 'hand-edited review file', DEFAULT_SUBSCRIPTIONS)
+  .option('--db <path>', 'SQLite database path', './ledgerwalk.db')
+  .option('--service <name>', 'only this service')
+  .option('--no-github', 'skip the GitHub stars / last-commit lookup')
+  .option('--headed', 'no-op here; accepted so every command takes the same flags', false)
+  .option('--dry-run', 'print what would be asked, call nothing, write nothing', false)
+  .action(
+    async (options: {
+      subscriptions: string;
+      db: string;
+      service?: string;
+      github: boolean;
+      dryRun: boolean;
+    }) => {
+      const confirmed = loadConfirmed(options.subscriptions);
+      if (confirmed.length === 0) {
+        console.log(`No confirmed subscriptions in ${options.subscriptions}.`);
+        return;
+      }
+
+      const wanted = options.service?.toLowerCase();
+      const db = openDb(options.db);
+      try {
+        const rows = confirmed.filter(
+          (record) => wanted === undefined || serviceNameFor(record).toLowerCase() === wanted,
+        );
+        if (rows.length === 0) throw new Error(`no confirmed subscription named "${options.service ?? ''}"`);
+
+        // A model is only constructed when one is actually needed, so --dry-run
+        // works without an API key.
+        const model = options.dryRun ? null : new ModelClient();
+
+        for (const record of rows) {
+          const service = serviceNameFor(record);
+          const audit = latestAudit(db, service);
+          const planTier = audit?.fields?.['plan'] ?? null;
+          const input = { service, planTier, annualCost: record.annualCost };
+
+          if (model === null) {
+            console.log(`\n--- would ask about ${service} ---`);
+            console.log(renderRequest(input));
+            continue;
+          }
+
+          process.stdout.write(`${service}... `);
+          const parsed = await suggestAlternative({
+            input,
+            model,
+            verifyRepo: options.github,
+          });
+
+          if (!parsed.ok) {
+            console.log(`failed: ${parsed.error}`);
+            continue;
+          }
+
+          const suggestion = parsed.suggestion;
+          if (suggestion.kind === 'none') {
+            console.log(`no real alternative (${suggestion.category.replace(/_/g, ' ')})`);
+            saveAlternative(db, {
+              service,
+              normalizedName: record.normalizedName,
+              annualCost: record.annualCost,
+              alternative: null,
+              reason: suggestion.reason,
+              noAlternativeCategory: suggestion.category,
+              repoUrl: null,
+              license: null,
+              selfHostRequired: null,
+              migrationEffort: null,
+              annualSavings: null,
+              featuresLost: [],
+              confidence: suggestion.confidence,
+              repoStars: null,
+              repoLastCommit: null,
+              repoStale: null,
+            });
+            continue;
+          }
+
+          const value = suggestion.value;
+          const stale = value.repoHealth?.stale === true ? ' (unmaintained)' : '';
+          console.log(`${value.alternative}${stale}, saves ${value.annualSavings.toFixed(2)}`);
+          saveAlternative(db, {
+            service,
+            normalizedName: record.normalizedName,
+            annualCost: record.annualCost,
+            alternative: value.alternative,
+            reason: value.reason,
+            noAlternativeCategory: null,
+            repoUrl: value.repoUrl,
+            license: value.license,
+            selfHostRequired: value.selfHostRequired,
+            migrationEffort: value.migrationEffort,
+            annualSavings: value.annualSavings,
+            featuresLost: value.featuresLost,
+            confidence: value.confidence,
+            repoStars: value.repoHealth?.stars ?? null,
+            repoLastCommit: value.repoHealth?.lastCommit ?? null,
+            repoStale: value.repoHealth?.stale ?? null,
+          });
+        }
+
+        if (model !== null) {
+          console.log(
+            `\nModel usage: ${model.tokens.input} in / ${model.tokens.output} out over ${model.calls} call(s).`,
+          );
+        }
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+program
+  .command('report')
+  .description('Render the audit as a markdown table')
+  .option('--subscriptions <path>', 'hand-edited review file', DEFAULT_SUBSCRIPTIONS)
+  .option('--db <path>', 'SQLite database path', './ledgerwalk.db')
+  .option('--out <path>', 'also write the markdown to a file')
+  .option('--headed', 'no-op here; accepted so every command takes the same flags', false)
+  .option('--dry-run', 'print the report without writing --out', false)
+  .action((options: { subscriptions: string; db: string; out?: string; dryRun: boolean }) => {
+    const db = openDb(options.db);
+    let markdown: string;
+    try {
+      markdown = renderReport(buildRows(db, options.subscriptions));
+    } finally {
+      db.close();
+    }
+
+    console.log(markdown);
+
+    if (options.out !== undefined && !options.dryRun) {
+      writeFileSync(options.out, `${markdown}\n`, 'utf8');
+      console.error(`\nWrote ${options.out}`);
+    }
+  });
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));

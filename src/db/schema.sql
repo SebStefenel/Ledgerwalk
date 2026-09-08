@@ -46,3 +46,26 @@ CREATE TABLE IF NOT EXISTS audits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audits_service ON audits (service, finished_at DESC);
+
+-- Phase 3: one suggestion per service. `alternative` is NULL when the model
+-- judged that no genuine open-source substitute exists; `reason` says why.
+CREATE TABLE IF NOT EXISTS alternatives (
+  id                      INTEGER PRIMARY KEY,
+  service                 TEXT    NOT NULL UNIQUE,
+  normalized_name         TEXT,
+  annual_cost             REAL    NOT NULL,
+  alternative             TEXT,
+  reason                  TEXT    NOT NULL,
+  no_alternative_category TEXT,
+  repo_url                TEXT,
+  license                 TEXT,
+  self_host_required      INTEGER,
+  migration_effort        TEXT,
+  annual_savings          REAL,
+  features_lost           TEXT,   -- JSON array of strings
+  confidence              TEXT    NOT NULL,
+  repo_stars              INTEGER,
+  repo_last_commit        TEXT,
+  repo_stale              INTEGER,
+  updated_at              TEXT    NOT NULL DEFAULT (datetime('now'))
+);
